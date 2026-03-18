@@ -45,6 +45,8 @@ Current GitHub releases are unsigned test builds.
 
 That means macOS may block the app the first time you open it. If that happens:
 
+<img width="966" height="212" alt="image" src="https://github.com/user-attachments/assets/f9ded96c-3b86-476f-864f-86f6eb0263bd" />
+
 1. Try opening the app once.
 2. Open `System Settings > Privacy & Security`.
 3. Scroll to the security section near the bottom.
