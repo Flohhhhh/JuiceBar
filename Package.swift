@@ -12,6 +12,11 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "JuiceBar",
+            path: "JuiceBar",
+            exclude: [
+                "Assets.xcassets",
+                "Info.plist",
+            ],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("IOKit"),

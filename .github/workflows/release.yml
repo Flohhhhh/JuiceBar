@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Determine whether to release
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          before_sha="${{ github.event.before }}"
+          if [[ "$before_sha" == "0000000000000000000000000000000000000000" ]]; then
+            before_sha="$(git rev-list --max-count=1 HEAD^ || true)"
+          fi
+
+          if [[ -z "$before_sha" ]]; then
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if git diff --name-only "$before_sha" "${{ github.sha }}" | grep -qx 'VERSION'; then
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Read version
+        if: steps.gate.outputs.should_release == 'true'
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          tag="v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Check whether tag already exists
+        if: steps.gate.outputs.should_release == 'true'
+        id: exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git rev-parse "${{ steps.version.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build unsigned release zip
+        if: steps.gate.outputs.should_release == 'true' && steps.exists.outputs.exists == 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/release.sh
+          MARKETING_VERSION="${{ steps.version.outputs.version }}" \
+          CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+          ./scripts/release.sh unsigned
+
+      - name: Create GitHub release
+        if: steps.gate.outputs.should_release == 'true' && steps.exists.outputs.exists == 'false'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "${{ steps.version.outputs.tag }}" \
+            "dist/JuiceBar.zip" \
+            --title "Juice Bar ${{ steps.version.outputs.tag }}" \
+            --generate-notes
