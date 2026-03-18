@@ -29,7 +29,7 @@ Clicking it opens a small native menu with:
 - Launch at Login
 - Quit
 
-## For Non-Technical Users
+## For Users
 
 ### Download and run Juice Bar
 
