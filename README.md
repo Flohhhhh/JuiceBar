@@ -1,5 +1,7 @@
 # Juice Bar
 
+<img width="708" height="534" alt="image" src="https://github.com/user-attachments/assets/942686ef-ab1b-46a5-b24b-0e7b9ffebf96" />
+
 Juice Bar is a minimal macOS menu bar utility that shows your Mac’s battery time remaining directly in the menu bar.
 
 Examples:
