@@ -65,6 +65,10 @@ final class BatteryMenuViewModel: ObservableObject {
         return BatteryTimeFormatter.format(minutes: minutes)
     }
 
+    var showsChargingBolt: Bool {
+        batteryState.hasBattery && batteryState.isCharging && !batteryState.isFull
+    }
+
     var headlineText: String {
         guard batteryState.hasBattery else {
             return "No battery detected"

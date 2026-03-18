@@ -9,8 +9,15 @@ struct JuiceBarApp: App {
         MenuBarExtra {
             MenuContentView(viewModel: viewModel)
         } label: {
-            Text(viewModel.displayText)
-                .monospacedDigit()
+            HStack(spacing: 4) {
+                if viewModel.showsChargingBolt {
+                    Image(systemName: "bolt.fill")
+                        .imageScale(.small)
+                }
+
+                Text(viewModel.displayText)
+                    .monospacedDigit()
+            }
         }
         .menuBarExtraStyle(.menu)
     }
