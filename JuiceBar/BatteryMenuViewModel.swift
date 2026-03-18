@@ -4,12 +4,20 @@ import Foundation
 
 @MainActor
 final class BatteryMenuViewModel: ObservableObject {
+    private enum RefreshPolicy {
+        static let fastInterval: TimeInterval = 1
+        static let activeInterval: TimeInterval = 10
+        static let idleInterval: TimeInterval = 30
+        static let powerChangeFastWindow: TimeInterval = 120
+    }
+
     private let batteryService: BatteryService
     private let launchAtLoginService: LaunchAtLoginService
 
     private var refreshTimer: Timer?
     private var refreshTask: Task<Void, Never>?
     private var wakeObserver: NSObjectProtocol?
+    private var fastRefreshUntil: Date?
 
     @Published private(set) var batteryState = BatteryState(
         hasBattery: false,
@@ -17,7 +25,9 @@ final class BatteryMenuViewModel: ObservableObject {
         isCharging: false,
         isFull: false,
         powerSource: .unknown,
-        timeRemainingMinutes: nil
+        timeRemainingMinutes: nil,
+        estimateDate: nil,
+        estimateSource: .none
     )
     @Published private(set) var launchAtLoginState = LaunchAtLoginState(status: .disabled, note: nil)
     @Published private(set) var errorMessage: String?
@@ -31,6 +41,7 @@ final class BatteryMenuViewModel: ObservableObject {
 
         batteryService.onPowerSourceChange = { [weak self] in
             Task { @MainActor [weak self] in
+                self?.activateFastRefreshWindow(duration: RefreshPolicy.powerChangeFastWindow)
                 self?.scheduleRefresh(after: .milliseconds(400))
             }
         }
@@ -41,12 +52,12 @@ final class BatteryMenuViewModel: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
+                self?.activateFastRefreshWindow(duration: RefreshPolicy.fastInterval * 3)
                 self?.scheduleRefresh()
             }
         }
 
         refresh()
-        startRefreshTimer()
     }
 
     var displayText: String {
@@ -78,12 +89,28 @@ final class BatteryMenuViewModel: ObservableObject {
             return "Full"
         }
 
+        if batteryState.powerSource == .ac && !batteryState.isCharging {
+            return "Not charging"
+        }
+
         guard let minutes = batteryState.timeRemainingMinutes else {
             return "Estimate unavailable"
         }
 
         let time = BatteryTimeFormatter.format(minutes: minutes)
         return batteryState.isCharging ? "\(time) to full" : "\(time) remaining"
+    }
+
+    var stateIndicator: BatteryStateIndicator {
+        BatteryStateIndicator.resolve(from: batteryState)
+    }
+
+    var stateIconName: String {
+        stateIndicator.iconName
+    }
+
+    var stateDebugText: String {
+        stateIndicator.label
     }
 
     var percentageText: String {
@@ -105,6 +132,18 @@ final class BatteryMenuViewModel: ObservableObject {
 
         if batteryState.isCharging {
             return "Charging"
+        }
+
+        if batteryState.powerSource == .ac {
+            return "Not Charging"
+        }
+
+        if batteryState.timeRemainingMinutes == nil, batteryState.powerSource == .battery || batteryState.powerSource == .ups {
+            return "Estimate Pending"
+        }
+
+        if batteryState.estimateSource == .derived, batteryState.powerSource == .battery || batteryState.powerSource == .ups {
+            return "Fallback Estimate"
         }
 
         switch batteryState.powerSource {
@@ -140,12 +179,15 @@ final class BatteryMenuViewModel: ObservableObject {
     }
 
     func refresh() {
-        batteryState = batteryService.fetchState()
+        let freshBatteryState = batteryService.fetchState()
+        batteryState = BatteryStateStabilizer.stabilize(previous: batteryState, fresh: freshBatteryState)
         launchAtLoginState = launchAtLoginService.currentState()
 
         if errorMessage == launchAtLoginState.note {
             errorMessage = nil
         }
+
+        scheduleNextRefreshTimer()
     }
 
     func scheduleRefresh(after delay: Duration = .zero) {
@@ -178,14 +220,52 @@ final class BatteryMenuViewModel: ObservableObject {
         NSApplication.shared.terminate(nil)
     }
 
-    private func startRefreshTimer() {
-        let timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+    private func activateFastRefreshWindow(duration: TimeInterval) {
+        let candidate = Date().addingTimeInterval(duration)
+
+        if let fastRefreshUntil {
+            self.fastRefreshUntil = max(fastRefreshUntil, candidate)
+        } else {
+            fastRefreshUntil = candidate
+        }
+
+        scheduleNextRefreshTimer()
+    }
+
+    private func scheduleNextRefreshTimer() {
+        refreshTimer?.invalidate()
+
+        let interval = nextRefreshInterval()
+        let timer = Timer(timeInterval: interval, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.refresh()
+                self?.scheduleRefresh()
             }
         }
 
-        timer.tolerance = 5
+        timer.tolerance = min(max(interval * 0.1, 0.2), 2)
+        RunLoop.main.add(timer, forMode: .common)
         refreshTimer = timer
+    }
+
+    private func nextRefreshInterval() -> TimeInterval {
+        if let fastRefreshUntil, fastRefreshUntil <= Date() {
+            self.fastRefreshUntil = nil
+        }
+
+        if fastRefreshUntil != nil || shouldRefreshAggressively {
+            return RefreshPolicy.fastInterval
+        }
+
+        if batteryState.hasBattery && !batteryState.isFull {
+            return RefreshPolicy.activeInterval
+        }
+
+        return RefreshPolicy.idleInterval
+    }
+
+    private var shouldRefreshAggressively: Bool {
+        batteryState.hasBattery && !batteryState.isFull && (
+            batteryState.timeRemainingMinutes == nil || batteryState.estimateSource == .derived
+        )
     }
 }

@@ -5,11 +5,18 @@ struct MenuContentView: View {
 
     var body: some View {
         Group {
-            Text(viewModel.headlineText)
-                .monospacedDigit()
+            HStack(spacing: 8) {
+                Image(systemName: viewModel.stateIconName)
+                    .frame(width: 14)
+                Text(viewModel.headlineText)
+                    .monospacedDigit()
+            }
 
             Text("Battery: \(viewModel.percentageText)")
             Text("Status: \(viewModel.statusText)")
+            Label(viewModel.stateDebugText, systemImage: viewModel.stateIconName)
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             if viewModel.showsLaunchAtLoginSection {
                 Divider()
