@@ -19,7 +19,7 @@ final class BatteryMenuViewModel: ObservableObject {
         powerSource: .unknown,
         timeRemainingMinutes: nil
     )
-    @Published private(set) var launchAtLoginState = LaunchAtLoginState(isEnabled: false, note: nil)
+    @Published private(set) var launchAtLoginState = LaunchAtLoginState(status: .disabled, note: nil)
     @Published private(set) var errorMessage: String?
 
     init(
@@ -120,7 +120,23 @@ final class BatteryMenuViewModel: ObservableObject {
     }
 
     var launchAtLoginEnabled: Bool {
-        launchAtLoginState.isEnabled
+        launchAtLoginState.toggleValue
+    }
+
+    var showsLaunchAtLoginSection: Bool {
+        launchAtLoginState.isVisible
+    }
+
+    var showsLaunchAtLoginControl: Bool {
+        launchAtLoginState.isControllable
+    }
+
+    var launchAtLoginStatusText: String {
+        launchAtLoginState.statusText
+    }
+
+    var launchAtLoginMessage: String? {
+        errorMessage ?? launchAtLoginState.note
     }
 
     func refresh() {
@@ -145,9 +161,13 @@ final class BatteryMenuViewModel: ObservableObject {
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {
+        guard launchAtLoginState.isControllable else { return }
+
+        errorMessage = nil
+
         do {
             launchAtLoginState = try launchAtLoginService.setEnabled(enabled)
-            errorMessage = launchAtLoginState.note
+            scheduleRefresh(after: .milliseconds(600))
         } catch {
             launchAtLoginState = launchAtLoginService.currentState()
             errorMessage = error.localizedDescription

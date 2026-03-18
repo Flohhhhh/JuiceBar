@@ -77,4 +77,5 @@ Testers will need to bypass Gatekeeper once when opening it.
 
 - `LSUIElement` is already enabled in `JuiceBar/Info.plist`, so the app behaves like a menu bar utility.
 - The current bundle identifier is a placeholder starting point. Change it before shipping.
+- Launch-at-login behavior depends on how the app is run and packaged. See `docs/launch-at-login.md`.
 - You do not need the Mac App Store for this flow, but you do want Developer ID signing and notarization so users can open the app normally.

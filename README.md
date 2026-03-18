@@ -28,7 +28,7 @@ Clicking it opens a small native menu with:
 - battery percentage
 - charging status
 - Refresh
-- Launch at Login
+- Launch at Login, when supported by the current build/runtime
 - Quit
 
 ## For Users
@@ -123,6 +123,7 @@ More detail:
 - `docs/versioning-and-releases.md`
 - `docs/release-workflow.md`
 - `docs/direct-distribution.md`
+- `docs/launch-at-login.md`
 
 ## Current distribution status
 

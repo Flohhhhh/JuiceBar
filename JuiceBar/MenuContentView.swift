@@ -11,9 +11,29 @@ struct MenuContentView: View {
             Text("Battery: \(viewModel.percentageText)")
             Text("Status: \(viewModel.statusText)")
 
-            if let note = viewModel.errorMessage ?? viewModel.launchAtLoginState.note {
+            if viewModel.showsLaunchAtLoginSection {
                 Divider()
-                Text(note)
+
+                if viewModel.showsLaunchAtLoginControl {
+                    Text("Launch at Login: \(viewModel.launchAtLoginStatusText)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Toggle(
+                        "Launch at Login",
+                        isOn: Binding(
+                            get: { viewModel.launchAtLoginEnabled },
+                            set: { viewModel.setLaunchAtLogin($0) }
+                        )
+                    )
+                }
+
+                if let note = viewModel.launchAtLoginMessage {
+                    Text(note)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Divider()
@@ -21,16 +41,6 @@ struct MenuContentView: View {
             Button("Refresh") {
                 viewModel.refresh()
             }
-
-            Toggle(
-                "Launch at Login",
-                isOn: Binding(
-                    get: { viewModel.launchAtLoginEnabled },
-                    set: { viewModel.setLaunchAtLogin($0) }
-                )
-            )
-
-            Divider()
 
             Button("Quit") {
                 viewModel.quit()
