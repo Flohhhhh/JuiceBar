@@ -116,6 +116,38 @@ enum BatteryEstimateResolver {
         return max(1, Int((hoursToEmpty * 60.0).rounded(.down)))
     }
 
+    static func shouldPreferDescriptionEstimate(
+        descriptionEstimate: Int?,
+        registryEstimate: Int?,
+        reportedPowerSource: BatteryPowerSource,
+        effectivePowerSource: BatteryPowerSource,
+        registrySnapshot: BatteryRegistrySnapshot?
+    ) -> Bool {
+        guard let descriptionEstimate else {
+            return false
+        }
+
+        if reportedPowerSource != effectivePowerSource {
+            return false
+        }
+
+        if effectivePowerSource == .battery || effectivePowerSource == .ups {
+            if registrySnapshot?.externalConnected == true {
+                return false
+            }
+
+            if let effectiveAmperage = registrySnapshot?.effectiveAmperage, effectiveAmperage > 0 {
+                return false
+            }
+        }
+
+        if descriptionEstimate <= 1, registryEstimate != nil {
+            return false
+        }
+
+        return true
+    }
+
     private static func firstAvailable(_ values: [Int?]) -> Int? {
         values.compactMap { $0 }.first
     }
@@ -125,11 +157,16 @@ enum BatteryPowerSourceResolver {
     static func resolve(
         reportedPowerSource: BatteryPowerSource,
         registrySnapshot: BatteryRegistrySnapshot?,
-        isCharging: Bool
+        isCharging: Bool,
+        previousPowerSource: BatteryPowerSource?
     ) -> BatteryPowerSource {
         if reportedPowerSource == .ac {
             if registrySnapshot?.externalConnected == false {
                 return .battery
+            }
+
+            if previousPowerSource == .battery || previousPowerSource == .ups {
+                return .ac
             }
 
             if !isCharging, let effectiveAmperage = registrySnapshot?.effectiveAmperage, effectiveAmperage < 0 {
@@ -141,10 +178,125 @@ enum BatteryPowerSourceResolver {
     }
 }
 
+struct PersistedDischargeRateBaseline {
+    var shortTermRate: Int?
+    var longTermRate: Int?
+}
+
+private struct PersistedDischargeRates: Codable {
+    var shortTermRate: Int?
+    var shortTermUpdatedAt: Date?
+    var longTermRate: Int?
+    var longTermUpdatedAt: Date?
+}
+
+protocol BatteryDischargeRateStore {
+    func loadBaseline(now: Date) -> PersistedDischargeRateBaseline
+    func recordObservedRate(_ dischargeRate: Int, now: Date)
+}
+
+final class UserDefaultsBatteryDischargeRateStore: BatteryDischargeRateStore {
+    private enum Policy {
+        static let shortTermMaxAge: TimeInterval = 7 * 24 * 60 * 60
+        static let longTermMaxAge: TimeInterval = 30 * 24 * 60 * 60
+        static let shortTermFreshWeight = 0.35
+        static let longTermFreshWeight = 0.1
+    }
+
+    private let userDefaults: UserDefaults
+    private let key: String
+    private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
+
+    init(
+        userDefaults: UserDefaults = .standard,
+        key: String = "BatteryDischargeRateBaselines"
+    ) {
+        self.userDefaults = userDefaults
+        self.key = key
+    }
+
+    func loadBaseline(now: Date) -> PersistedDischargeRateBaseline {
+        guard let persisted = persistedRates() else {
+            return PersistedDischargeRateBaseline(shortTermRate: nil, longTermRate: nil)
+        }
+
+        return PersistedDischargeRateBaseline(
+            shortTermRate: isFresh(persisted.shortTermUpdatedAt, now: now, maxAge: Policy.shortTermMaxAge)
+                ? persisted.shortTermRate
+                : nil,
+            longTermRate: isFresh(persisted.longTermUpdatedAt, now: now, maxAge: Policy.longTermMaxAge)
+                ? persisted.longTermRate
+                : nil
+        )
+    }
+
+    func recordObservedRate(_ dischargeRate: Int, now: Date) {
+        guard dischargeRate > 0 else {
+            return
+        }
+
+        var persisted = persistedRates() ?? PersistedDischargeRates()
+        persisted.shortTermRate = blendedRate(
+            existingRate: persisted.shortTermRate,
+            freshRate: dischargeRate,
+            freshWeight: Policy.shortTermFreshWeight
+        )
+        persisted.shortTermUpdatedAt = now
+        persisted.longTermRate = blendedRate(
+            existingRate: persisted.longTermRate,
+            freshRate: dischargeRate,
+            freshWeight: Policy.longTermFreshWeight
+        )
+        persisted.longTermUpdatedAt = now
+        save(persisted)
+    }
+
+    private func blendedRate(existingRate: Int?, freshRate: Int, freshWeight: Double) -> Int {
+        guard let existingRate else {
+            return freshRate
+        }
+
+        return Int(
+            (Double(existingRate) * (1 - freshWeight) + Double(freshRate) * freshWeight)
+                .rounded()
+        )
+    }
+
+    private func persistedRates() -> PersistedDischargeRates? {
+        guard let data = userDefaults.data(forKey: key) else {
+            return nil
+        }
+
+        return try? decoder.decode(PersistedDischargeRates.self, from: data)
+    }
+
+    private func save(_ persisted: PersistedDischargeRates) {
+        guard let data = try? encoder.encode(persisted) else {
+            return
+        }
+
+        userDefaults.set(data, forKey: key)
+    }
+
+    private func isFresh(_ updatedAt: Date?, now: Date, maxAge: TimeInterval) -> Bool {
+        guard let updatedAt else {
+            return false
+        }
+
+        let age = now.timeIntervalSince(updatedAt)
+        return age >= 0 && age <= maxAge
+    }
+}
+
 final class BatteryDischargeEstimateTracker {
     private struct Sample {
         let date: Date
         let currentCapacity: Int
+        let dischargeRate: Int
+    }
+
+    private struct CachedRate {
         let dischargeRate: Int
     }
 
@@ -155,10 +307,36 @@ final class BatteryDischargeEstimateTracker {
         static let maximumSampleCount = 8
     }
 
+    private let rateStore: any BatteryDischargeRateStore
     private var samples: [Sample] = []
+    private var cachedRate: CachedRate?
+
+    init(rateStore: any BatteryDischargeRateStore = UserDefaultsBatteryDischargeRateStore()) {
+        self.rateStore = rateStore
+    }
 
     func reset() {
         samples.removeAll()
+    }
+
+    func debugSummary(now: Date = Date()) -> String {
+        let persistedBaseline = rateStore.loadBaseline(now: now)
+        let cachedSummary: String
+        if let cachedRate {
+            cachedSummary = " cachedRate=\(cachedRate.dischargeRate)"
+        } else {
+            cachedSummary = " cachedRate=nil"
+        }
+        let persistedSummary = " shortRate=\(persistedBaseline.shortTermRate.map(String.init) ?? "nil")"
+            + " longRate=\(persistedBaseline.longTermRate.map(String.init) ?? "nil")"
+
+        guard let first = samples.first, let last = samples.last else {
+            return "samples=0\(cachedSummary)\(persistedSummary)"
+        }
+
+        let span = String(format: "%.1fs", last.date.timeIntervalSince(first.date))
+        let medianRate = median(samples.map(\.dischargeRate))
+        return "samples=\(samples.count) span=\(span) medianRate=\(medianRate)\(cachedSummary)\(persistedSummary)"
     }
 
     func recordAndEstimate(registrySnapshot: BatteryRegistrySnapshot?, now: Date = Date()) -> Int? {
@@ -190,7 +368,53 @@ final class BatteryDischargeEstimateTracker {
         }
 
         let medianRate = median(samples.map(\.dischargeRate))
+        cachedRate = CachedRate(dischargeRate: medianRate)
+        rateStore.recordObservedRate(medianRate, now: now)
         return max(1, Int((Double(currentCapacity) / Double(medianRate) * 60.0).rounded(.down)))
+    }
+
+    func estimateUsingCachedRate(registrySnapshot: BatteryRegistrySnapshot?, now: Date = Date()) -> Int? {
+        guard
+            let currentCapacity = registrySnapshot?.rawCurrentCapacity,
+            currentCapacity > 0
+        else {
+            return nil
+        }
+
+        let persistedBaseline = rateStore.loadBaseline(now: now)
+        let dischargeRate = cachedRate?.dischargeRate
+            ?? persistedBaseline.shortTermRate
+            ?? persistedBaseline.longTermRate
+
+        guard let dischargeRate else {
+            return nil
+        }
+
+        return max(1, Int((Double(currentCapacity) / Double(dischargeRate) * 60.0).rounded(.down)))
+    }
+
+    func cacheResolvedEstimate(registrySnapshot: BatteryRegistrySnapshot?, minutes: Int?) {
+        guard
+            let currentCapacity = registrySnapshot?.rawCurrentCapacity,
+            currentCapacity > 0,
+            let minutes,
+            minutes > 0,
+            let effectiveAmperage = registrySnapshot?.effectiveAmperage,
+            effectiveAmperage < 0
+        else {
+            return
+        }
+
+        let dischargeRate = max(1, Int((Double(currentCapacity) / Double(minutes) * 60.0).rounded()))
+        let observedRate = -effectiveAmperage
+        let largerRate = max(dischargeRate, observedRate)
+        let smallerRate = max(1, min(dischargeRate, observedRate))
+
+        guard Double(largerRate) / Double(smallerRate) <= 25 else {
+            return
+        }
+
+        cachedRate = CachedRate(dischargeRate: dischargeRate)
     }
 
     private func pruneSamples(now: Date) {
@@ -221,6 +445,7 @@ private struct ResolvedBatteryEstimate {
 final class BatteryService {
     private enum PowerTransitionPolicy {
         static let dischargeWarmupWindow: TimeInterval = 2
+        static let provisionalDischargeDelay: TimeInterval = 1
         static let chargingWarmupWindow: TimeInterval = 8
     }
 
@@ -250,6 +475,7 @@ final class BatteryService {
             let sourceList = IOPSCopyPowerSourcesList(snapshot)?.takeRetainedValue() as? [CFTypeRef]
         else {
             dischargeEstimateTracker.reset()
+            BatteryDebugLog.message("refresh raw=no-power-sources")
             return BatteryState(
                 hasBattery: false,
                 percentage: nil,
@@ -272,6 +498,7 @@ final class BatteryService {
 
         guard let batteryDescription else {
             dischargeEstimateTracker.reset()
+            BatteryDebugLog.message("refresh raw=no-internal-battery reportedSource=\(resolvedPowerSource(snapshot: snapshot).debugName)")
             return BatteryState(
                 hasBattery: false,
                 percentage: nil,
@@ -297,20 +524,21 @@ final class BatteryService {
         let powerSource = BatteryPowerSourceResolver.resolve(
             reportedPowerSource: reportedPowerSource,
             registrySnapshot: registrySnapshot,
-            isCharging: isCharging
+            isCharging: isCharging,
+            previousPowerSource: lastObservedPowerSource
         )
         updatePowerSourceHistory(currentPowerSource: powerSource, now: now)
         updateChargingHistory(isCharging: isCharging, now: now)
         let isCharged = (batteryDescription[kIOPSIsChargedKey] as? Bool) ?? false
         let estimate = resolvedEstimate(
+            reportedPowerSource: reportedPowerSource,
             powerSource: powerSource,
             isCharging: isCharging,
             description: batteryDescription,
             registrySnapshot: registrySnapshot,
             now: now
         )
-
-        return BatteryState(
+        let state = BatteryState(
             hasBattery: true,
             percentage: percentage,
             isCharging: isCharging,
@@ -320,6 +548,18 @@ final class BatteryService {
             estimateDate: estimate.minutes == nil ? nil : now,
             estimateSource: estimate.source
         )
+
+        logRefresh(
+            reportedPowerSource: reportedPowerSource,
+            effectivePowerSource: powerSource,
+            description: batteryDescription,
+            registrySnapshot: registrySnapshot,
+            estimate: estimate,
+            state: state,
+            now: now
+        )
+
+        return state
     }
 
     private func installPowerSourceObserver() {
@@ -327,6 +567,7 @@ final class BatteryService {
         guard let source = IOPSNotificationCreateRunLoopSource({ context in
             guard let context else { return }
             let service = Unmanaged<BatteryService>.fromOpaque(context).takeUnretainedValue()
+            BatteryDebugLog.message("event=power-source-notification")
             service.onPowerSourceChange?()
         }, context)?.takeRetainedValue() else {
             return
@@ -363,6 +604,7 @@ final class BatteryService {
     }
 
     private func resolvedEstimate(
+        reportedPowerSource: BatteryPowerSource,
         powerSource: BatteryPowerSource,
         isCharging: Bool,
         description: [String: Any],
@@ -390,24 +632,45 @@ final class BatteryService {
             return ResolvedBatteryEstimate(minutes: nil, source: .none)
         }
 
+        let trackerEstimate = dischargeEstimateTracker.recordAndEstimate(registrySnapshot: registrySnapshot, now: now)
         let iopsEstimateSeconds = IOPSGetTimeRemainingEstimate()
         if (powerSource == .battery || powerSource == .ups), iopsEstimateSeconds > 0 {
+            let iopsMinutes = max(1, Int(iopsEstimateSeconds / 60.0))
+            dischargeEstimateTracker.cacheResolvedEstimate(
+                registrySnapshot: registrySnapshot,
+                minutes: iopsMinutes
+            )
             dischargeEstimateTracker.reset()
             return ResolvedBatteryEstimate(
-                minutes: max(1, Int(iopsEstimateSeconds / 60.0)),
+                minutes: iopsMinutes,
                 source: .system
             )
         }
 
-        if let descriptionEstimate = BatteryEstimateResolver.sanitizedMinutes(description[kIOPSTimeToEmptyKey] as? Int) {
+        let descriptionEstimate = BatteryEstimateResolver.sanitizedMinutes(description[kIOPSTimeToEmptyKey] as? Int)
+        let registryEstimate = BatteryEstimateResolver.sanitizedMinutes(registrySnapshot?.timeRemainingMinutes)
+            ?? BatteryEstimateResolver.sanitizedMinutes(registrySnapshot?.averageTimeToEmptyMinutes)
+
+        if BatteryEstimateResolver.shouldPreferDescriptionEstimate(
+            descriptionEstimate: descriptionEstimate,
+            registryEstimate: registryEstimate,
+            reportedPowerSource: reportedPowerSource,
+            effectivePowerSource: powerSource,
+            registrySnapshot: registrySnapshot
+        ), let descriptionEstimate {
+            dischargeEstimateTracker.cacheResolvedEstimate(
+                registrySnapshot: registrySnapshot,
+                minutes: descriptionEstimate
+            )
             dischargeEstimateTracker.reset()
             return ResolvedBatteryEstimate(minutes: descriptionEstimate, source: .system)
         }
 
-        let registryEstimate = BatteryEstimateResolver.sanitizedMinutes(registrySnapshot?.timeRemainingMinutes)
-            ?? BatteryEstimateResolver.sanitizedMinutes(registrySnapshot?.averageTimeToEmptyMinutes)
-
         if let registryEstimate, !isInDischargeWarmupWindow(now: now, powerSource: powerSource) {
+            dischargeEstimateTracker.cacheResolvedEstimate(
+                registrySnapshot: registrySnapshot,
+                minutes: registryEstimate
+            )
             return ResolvedBatteryEstimate(minutes: registryEstimate, source: .derived)
         }
 
@@ -416,23 +679,45 @@ final class BatteryService {
             return ResolvedBatteryEstimate(minutes: nil, source: .none)
         }
 
+        if let trackerEstimate {
+            return ResolvedBatteryEstimate(minutes: trackerEstimate, source: .derived)
+        }
+
+        if shouldUseProvisionalDischargeEstimate(now: now, powerSource: powerSource) {
+            return ResolvedBatteryEstimate(
+                minutes: dischargeEstimateTracker.estimateUsingCachedRate(
+                    registrySnapshot: registrySnapshot,
+                    now: now
+                ),
+                source: .derived
+            )
+        }
+
         return ResolvedBatteryEstimate(
-            minutes: dischargeEstimateTracker.recordAndEstimate(registrySnapshot: registrySnapshot, now: now),
+            minutes: nil,
             source: .derived
         )
     }
 
     private func updatePowerSourceHistory(currentPowerSource: BatteryPowerSource, now: Date) {
         if lastObservedPowerSource != currentPowerSource {
+            let previousPowerSource = lastObservedPowerSource?.debugName ?? "nil"
             lastObservedPowerSource = currentPowerSource
             lastPowerSourceChangeDate = now
+            BatteryDebugLog.message(
+                "event=power-source-transition previous=\(previousPowerSource) current=\(currentPowerSource.debugName)"
+            )
         }
     }
 
     private func updateChargingHistory(isCharging: Bool, now: Date) {
         if lastObservedChargingState != isCharging {
+            let previousChargingState = lastObservedChargingState.map(String.init) ?? "nil"
             lastObservedChargingState = isCharging
             lastChargingStateChangeDate = now
+            BatteryDebugLog.message(
+                "event=charging-transition previous=\(previousChargingState) current=\(isCharging)"
+            )
         }
     }
 
@@ -445,6 +730,18 @@ final class BatteryService {
         }
 
         return now.timeIntervalSince(lastPowerSourceChangeDate) < PowerTransitionPolicy.dischargeWarmupWindow
+    }
+
+    private func shouldUseProvisionalDischargeEstimate(now: Date, powerSource: BatteryPowerSource) -> Bool {
+        guard powerSource == .battery || powerSource == .ups else {
+            return false
+        }
+
+        guard let lastPowerSourceChangeDate else {
+            return true
+        }
+
+        return now.timeIntervalSince(lastPowerSourceChangeDate) >= PowerTransitionPolicy.provisionalDischargeDelay
     }
 
     private func isInChargingWarmupWindow(now: Date) -> Bool {
@@ -529,5 +826,49 @@ final class BatteryService {
         }
 
         return value as? Bool
+    }
+
+    private func logRefresh(
+        reportedPowerSource: BatteryPowerSource,
+        effectivePowerSource: BatteryPowerSource,
+        description: [String: Any],
+        registrySnapshot: BatteryRegistrySnapshot?,
+        estimate: ResolvedBatteryEstimate,
+        state: BatteryState,
+        now: Date
+    ) {
+        let iopsEstimateSeconds = IOPSGetTimeRemainingEstimate()
+        let iopsMinutes = iopsEstimateSeconds > 0 ? String(max(1, Int(iopsEstimateSeconds / 60.0))) : "nil"
+        let descriptionTimeToEmpty = BatteryEstimateResolver.sanitizedMinutes(description[kIOPSTimeToEmptyKey] as? Int)
+            .map(String.init) ?? "nil"
+        let descriptionTimeToFull = BatteryEstimateResolver.sanitizedMinutes(description[kIOPSTimeToFullChargeKey] as? Int)
+            .map(String.init) ?? "nil"
+        let dischargeWarmup = isInDischargeWarmupWindow(now: now, powerSource: effectivePowerSource)
+        let chargingWarmup = isInChargingWarmupWindow(now: now)
+
+        BatteryDebugLog.message(
+            """
+            refresh \
+            reported=\(reportedPowerSource.debugName) \
+            effective=\(effectivePowerSource.debugName) \
+            descEmpty=\(descriptionTimeToEmpty) \
+            descFull=\(descriptionTimeToFull) \
+            iops=\(iopsMinutes) \
+            regExternal=\(stringValue(registrySnapshot?.externalConnected)) \
+            regAmp=\(stringValue(registrySnapshot?.amperage)) \
+            regTimeRemaining=\(stringValue(registrySnapshot?.timeRemainingMinutes)) \
+            regAvgEmpty=\(stringValue(registrySnapshot?.averageTimeToEmptyMinutes)) \
+            dischargeWarmup=\(dischargeWarmup) \
+            chargingWarmup=\(chargingWarmup) \
+            tracker=\(dischargeEstimateTracker.debugSummary(now: now)) \
+            resultMinutes=\(stringValue(estimate.minutes)) \
+            resultSource=\(estimate.source.debugName) \
+            state[\(state.debugSummary)]
+            """
+        )
+    }
+
+    private func stringValue<T>(_ value: T?) -> String {
+        value.map { String(describing: $0) } ?? "nil"
     }
 }

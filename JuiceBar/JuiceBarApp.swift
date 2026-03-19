@@ -5,8 +5,15 @@ struct JuiceBarApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var viewModel = BatteryMenuViewModel()
 
+    private var menuBarVisibilityBinding: Binding<Bool> {
+        Binding(
+            get: { viewModel.showsMenuBarItem },
+            set: { _ in }
+        )
+    }
+
     var body: some Scene {
-        MenuBarExtra {
+        MenuBarExtra(isInserted: menuBarVisibilityBinding) {
             MenuContentView(viewModel: viewModel)
         } label: {
             HStack(spacing: 4) {

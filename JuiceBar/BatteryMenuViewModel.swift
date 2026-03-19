@@ -8,7 +8,7 @@ final class BatteryMenuViewModel: ObservableObject {
         static let fastInterval: TimeInterval = 1
         static let activeInterval: TimeInterval = 10
         static let idleInterval: TimeInterval = 30
-        static let powerChangeFastWindow: TimeInterval = 120
+        static let powerChangeFastWindow: TimeInterval = 15
     }
 
     private let batteryService: BatteryService
@@ -18,6 +18,7 @@ final class BatteryMenuViewModel: ObservableObject {
     private var refreshTask: Task<Void, Never>?
     private var wakeObserver: NSObjectProtocol?
     private var fastRefreshUntil: Date?
+    private var hasLoadedInitialBatteryState = false
 
     @Published private(set) var batteryState = BatteryState(
         hasBattery: false,
@@ -41,7 +42,6 @@ final class BatteryMenuViewModel: ObservableObject {
 
         batteryService.onPowerSourceChange = { [weak self] in
             Task { @MainActor [weak self] in
-                self?.activateFastRefreshWindow(duration: RefreshPolicy.powerChangeFastWindow)
                 self?.scheduleRefresh(after: .milliseconds(400))
             }
         }
@@ -78,6 +78,10 @@ final class BatteryMenuViewModel: ObservableObject {
 
     var showsChargingBolt: Bool {
         batteryState.hasBattery && batteryState.isCharging && !batteryState.isFull
+    }
+
+    var showsMenuBarItem: Bool {
+        BatteryMenuBarVisibilityPolicy.shouldShowItem(for: batteryState)
     }
 
     var headlineText: String {
@@ -179,9 +183,21 @@ final class BatteryMenuViewModel: ObservableObject {
     }
 
     func refresh() {
+        let previousBatteryState = batteryState
         let freshBatteryState = batteryService.fetchState()
-        batteryState = BatteryStateStabilizer.stabilize(previous: batteryState, fresh: freshBatteryState)
+        let stabilizedBatteryState = BatteryStateStabilizer.stabilize(previous: batteryState, fresh: freshBatteryState)
+        batteryState = stabilizedBatteryState
         launchAtLoginState = launchAtLoginService.currentState()
+
+        if hasLoadedInitialBatteryState, didMeaningfullyTransition(from: previousBatteryState, to: stabilizedBatteryState) {
+            activateFastRefreshWindow(duration: RefreshPolicy.powerChangeFastWindow)
+        }
+
+        hasLoadedInitialBatteryState = true
+
+        BatteryDebugLog.message(
+            "ui-refresh raw[\(freshBatteryState.debugSummary)] ui[\(stabilizedBatteryState.debugSummary)]"
+        )
 
         if errorMessage == launchAtLoginState.note {
             errorMessage = nil
@@ -264,8 +280,13 @@ final class BatteryMenuViewModel: ObservableObject {
     }
 
     private var shouldRefreshAggressively: Bool {
-        batteryState.hasBattery && !batteryState.isFull && (
-            batteryState.timeRemainingMinutes == nil || batteryState.estimateSource == .derived
-        )
+        batteryState.hasBattery && !batteryState.isFull && batteryState.timeRemainingMinutes == nil
+    }
+
+    private func didMeaningfullyTransition(from previous: BatteryState, to current: BatteryState) -> Bool {
+        previous.hasBattery != current.hasBattery
+            || previous.powerSource != current.powerSource
+            || previous.isCharging != current.isCharging
+            || previous.isFull != current.isFull
     }
 }

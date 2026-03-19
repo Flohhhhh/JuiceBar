@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 enum BatteryPowerSource {
     case ac
@@ -13,6 +14,20 @@ enum BatteryEstimateSource: Equatable {
     case derived
 }
 
+enum BatteryDebugLog {
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.camerongustavson.JuiceBar",
+        category: "Battery"
+    )
+    private static let enabled = ProcessInfo.processInfo.environment["JUICEBAR_BATTERY_DEBUG"] == "1"
+
+    static func message(_ message: @autoclosure () -> String) {
+        guard enabled else { return }
+        let value = message()
+        logger.debug("\(value, privacy: .public)")
+    }
+}
+
 struct BatteryState: Equatable {
     var hasBattery: Bool
     var percentage: Int?
@@ -22,6 +37,34 @@ struct BatteryState: Equatable {
     var timeRemainingMinutes: Int?
     var estimateDate: Date?
     var estimateSource: BatteryEstimateSource = .none
+}
+
+extension BatteryPowerSource {
+    var debugName: String {
+        switch self {
+        case .ac:
+            return "ac"
+        case .battery:
+            return "battery"
+        case .ups:
+            return "ups"
+        case .unknown:
+            return "unknown"
+        }
+    }
+}
+
+extension BatteryEstimateSource {
+    var debugName: String {
+        switch self {
+        case .none:
+            return "none"
+        case .system:
+            return "system"
+        case .derived:
+            return "derived"
+        }
+    }
 }
 
 enum BatteryStateIndicator: Equatable {
@@ -124,6 +167,24 @@ enum BatteryStateIndicator: Equatable {
     }
 }
 
+enum BatteryMenuBarVisibilityPolicy {
+    static func shouldShowItem(for state: BatteryState) -> Bool {
+        guard state.hasBattery else {
+            return false
+        }
+
+        if state.isCharging {
+            return state.timeRemainingMinutes != nil
+        }
+
+        if state.powerSource == .battery || state.powerSource == .ups {
+            return state.timeRemainingMinutes != nil
+        }
+
+        return false
+    }
+}
+
 enum BatteryStateStabilizer {
     private static let sameModeReuseWindow: TimeInterval = 90
     private static let derivedEstimateFreshWeight = 0.75
@@ -183,7 +244,7 @@ enum BatteryStateStabilizer {
     }
 }
 
-private extension BatteryState {
+extension BatteryState {
     func withEstimate(_ minutes: Int, date: Date, source: BatteryEstimateSource? = nil) -> BatteryState {
         var copy = self
         copy.timeRemainingMinutes = minutes
@@ -192,5 +253,17 @@ private extension BatteryState {
             copy.estimateSource = source
         }
         return copy
+    }
+
+    var debugSummary: String {
+        [
+            "battery=\(hasBattery)",
+            "pct=\(percentage.map(String.init) ?? "nil")",
+            "source=\(powerSource.debugName)",
+            "charging=\(isCharging)",
+            "full=\(isFull)",
+            "minutes=\(timeRemainingMinutes.map(String.init) ?? "nil")",
+            "estimateSource=\(estimateSource.debugName)"
+        ].joined(separator: " ")
     }
 }

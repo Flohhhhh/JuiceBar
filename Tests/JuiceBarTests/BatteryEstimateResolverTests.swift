@@ -75,4 +75,27 @@ struct BatteryEstimateResolverTests {
 
         #expect(minutes == nil)
     }
+
+    @Test func transitionDescriptionEstimateIsIgnoredWhenRegistryLooksBetter() {
+        let snapshot = BatteryRegistrySnapshot(
+            externalConnected: true,
+            rawCurrentCapacity: 5000,
+            rawMaxCapacity: 5800,
+            amperage: -728,
+            instantAmperage: nil,
+            timeRemainingMinutes: nil,
+            averageTimeToFullMinutes: nil,
+            averageTimeToEmptyMinutes: 327
+        )
+
+        let shouldPreferDescriptionEstimate = BatteryEstimateResolver.shouldPreferDescriptionEstimate(
+            descriptionEstimate: 1,
+            registryEstimate: 327,
+            reportedPowerSource: .ac,
+            effectivePowerSource: .battery,
+            registrySnapshot: snapshot
+        )
+
+        #expect(shouldPreferDescriptionEstimate == false)
+    }
 }
