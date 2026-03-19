@@ -20,6 +20,8 @@ It is intentionally small:
 
 Juice Bar lives in the macOS menu bar.
 
+Juice Bar keeps your menu bar clean by hiding itself when there is no meaningful battery timing information to display.
+
 Clicking it opens a small native menu with:
 
 - current time remaining
@@ -29,7 +31,7 @@ Clicking it opens a small native menu with:
 - Launch at Login, when supported by the current build/runtime
 - Quit
 
-The menu bar item is intentionally hidden when Juice Bar does not yet have meaningful timing information to show, such as AC/not-charging states or brief transition periods before a fresh estimate is available.
+The menu bar item is intentionally hidden when Juice Bar does not yet have meaningful timing information to show, such as AC/not-charging states, brief transition periods after wake/plug/unplug, or when an estimate is rejected by safety checks as implausible.
 
 ## For Users
 
@@ -61,7 +63,9 @@ After that first approval, you should be able to open Juice Bar normally.
 
 - Juice Bar does not open a normal app window.
 - It appears in the menu bar when there is useful charging or discharging time information to show.
-- If you do not immediately see it, the app may be in an AC or transition state where the menu bar item is intentionally hidden until a fresh estimate is available.
+- If you do not immediately see it, the app may be in an AC or transition state where the menu bar item is intentionally hidden until a fresh plausible estimate is available.
+- Discharge fallback baselines are persisted in `UserDefaults`, so valid learned discharge behavior can still be reused after app relaunch or machine restart on the same macOS account.
+- Implausible estimates are hidden instead of clamped. Juice Bar currently rejects discharge estimates above 24 hours and charging estimates above 12 hours.
 
 ## For Contributors
 
