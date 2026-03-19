@@ -8,8 +8,6 @@ Examples:
 
 - `3h 42m`
 - `1h 08m`
-- `Full`
-- `--`
 
 It is intentionally small:
 
@@ -30,6 +28,8 @@ Clicking it opens a small native menu with:
 - Refresh
 - Launch at Login, when supported by the current build/runtime
 - Quit
+
+The menu bar item is intentionally hidden when Juice Bar does not yet have meaningful timing information to show, such as AC/not-charging states or brief transition periods before a fresh estimate is available.
 
 ## For Users
 
@@ -60,8 +60,8 @@ After that first approval, you should be able to open Juice Bar normally.
 ### What to expect
 
 - Juice Bar does not open a normal app window.
-- It appears in the menu bar at the top of the screen.
-- If you do not immediately see it, look for text like `Full`, `--`, or `2h 15m` in the menu bar.
+- It appears in the menu bar when there is useful charging or discharging time information to show.
+- If you do not immediately see it, the app may be in an AC or transition state where the menu bar item is intentionally hidden until a fresh estimate is available.
 
 ## For Contributors
 
@@ -94,6 +94,15 @@ swift test
 env CLANG_MODULE_CACHE_PATH=.build/ModuleCache swift run JuiceBar
 ```
 
+For runtime behavior testing, prefer the real `.app` bundle:
+
+```bash
+cd /Users/camerongustavson/CodeProjects/juice-bar
+pkill JuiceBar
+xcodebuild -project JuiceBar.xcodeproj -scheme JuiceBar -configuration Debug build
+open ~/Library/Developer/Xcode/DerivedData/JuiceBar-*/Build/Products/Debug/JuiceBar.app
+```
+
 ### Build an unsigned local release zip
 
 ```bash
@@ -124,6 +133,8 @@ More detail:
 - `docs/release-workflow.md`
 - `docs/direct-distribution.md`
 - `docs/launch-at-login.md`
+- `docs/battery-behavior.md`
+- `docs/ui-setup.md`
 
 ## Current distribution status
 

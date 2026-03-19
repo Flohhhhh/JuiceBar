@@ -105,6 +105,27 @@ final class BatteryMenuViewModel: ObservableObject {
         return batteryState.isCharging ? "\(time) to full" : "\(time) remaining"
     }
 
+    var timeRemainingText: String {
+        guard batteryState.hasBattery else {
+            return "Unavailable"
+        }
+
+        if batteryState.isFull {
+            return "Full"
+        }
+
+        if batteryState.powerSource == .ac && !batteryState.isCharging {
+            return "Unavailable"
+        }
+
+        guard let minutes = batteryState.timeRemainingMinutes else {
+            return "Estimate unavailable"
+        }
+
+        let time = BatteryTimeFormatter.format(minutes: minutes)
+        return batteryState.isCharging ? "\(time) to full" : time
+    }
+
     var stateIndicator: BatteryStateIndicator {
         BatteryStateIndicator.resolve(from: batteryState)
     }
@@ -146,10 +167,6 @@ final class BatteryMenuViewModel: ObservableObject {
             return "Estimate Pending"
         }
 
-        if batteryState.estimateSource == .derived, batteryState.powerSource == .battery || batteryState.powerSource == .ups {
-            return "Fallback Estimate"
-        }
-
         switch batteryState.powerSource {
         case .battery:
             return "Discharging"
@@ -160,6 +177,18 @@ final class BatteryMenuViewModel: ObservableObject {
         case .unknown:
             return "Unknown"
         }
+    }
+
+    var dataSourceText: String {
+        guard batteryState.hasBattery else {
+            return "Unavailable"
+        }
+
+        if batteryState.isFull {
+            return "Not Applicable"
+        }
+
+        return batteryState.estimateSource.menuLabel
     }
 
     var launchAtLoginEnabled: Bool {

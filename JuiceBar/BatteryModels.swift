@@ -65,6 +65,17 @@ extension BatteryEstimateSource {
             return "derived"
         }
     }
+
+    var menuLabel: String {
+        switch self {
+        case .none:
+            return "Unavailable"
+        case .system:
+            return "System Estimate"
+        case .derived:
+            return "Fallback Estimate"
+        }
+    }
 }
 
 enum BatteryStateIndicator: Equatable {

@@ -5,42 +5,15 @@ struct MenuContentView: View {
 
     var body: some View {
         Group {
-            HStack(spacing: 8) {
-                Image(systemName: viewModel.stateIconName)
-                    .frame(width: 14)
+            Section("JuiceBar") {
                 Text(viewModel.headlineText)
                     .monospacedDigit()
+                Text("\(viewModel.percentageText) battery")
             }
 
-            Text("Battery: \(viewModel.percentageText)")
-            Text("Status: \(viewModel.statusText)")
-            Label(viewModel.stateDebugText, systemImage: viewModel.stateIconName)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            if viewModel.showsLaunchAtLoginSection {
-                Divider()
-
-                if viewModel.showsLaunchAtLoginControl {
-                    Text("Launch at Login: \(viewModel.launchAtLoginStatusText)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    Toggle(
-                        "Launch at Login",
-                        isOn: Binding(
-                            get: { viewModel.launchAtLoginEnabled },
-                            set: { viewModel.setLaunchAtLogin($0) }
-                        )
-                    )
-                }
-
-                if let note = viewModel.launchAtLoginMessage {
-                    Text(note)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+            Section("Info") {
+                Text("Status: \(viewModel.statusText)")
+                Text("Data Source: \(viewModel.dataSourceText)")
             }
 
             Divider()
