@@ -3,6 +3,16 @@ import Testing
 @testable import JuiceBar
 
 struct BatteryDischargeEstimateTrackerTests {
+    private struct StaticRateStore: BatteryDischargeRateStore {
+        let baseline: PersistedDischargeRateBaseline
+
+        func loadBaseline(now: Date) -> PersistedDischargeRateBaseline {
+            baseline
+        }
+
+        func recordObservedRate(_ dischargeRate: Int, now: Date) {}
+    }
+
     private func makeIsolatedTracker() -> (BatteryDischargeEstimateTracker, UserDefaults, String) {
         let suiteName = "BatteryDischargeEstimateTrackerTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -195,6 +205,107 @@ struct BatteryDischargeEstimateTrackerTests {
         tracker.cacheResolvedEstimate(registrySnapshot: snapshot, minutes: 1)
 
         #expect(tracker.estimateUsingCachedRate(registrySnapshot: snapshot) == nil)
+    }
+
+    @Test func observedRatesWithImplausibleRuntimeAreNotPersisted() {
+        let (tracker, defaults, suiteName) = makeIsolatedTracker()
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let start = Date()
+        let snapshot = BatteryRegistrySnapshot(
+            rawCurrentCapacity: 5400,
+            rawMaxCapacity: 5800,
+            amperage: -100,
+            instantAmperage: nil,
+            timeRemainingMinutes: nil,
+            averageTimeToFullMinutes: nil,
+            averageTimeToEmptyMinutes: nil
+        )
+
+        #expect(tracker.recordAndEstimate(registrySnapshot: snapshot, now: start) == nil)
+        #expect(tracker.recordAndEstimate(registrySnapshot: snapshot, now: start.addingTimeInterval(1)) == nil)
+        #expect(tracker.recordAndEstimate(registrySnapshot: snapshot, now: start.addingTimeInterval(2)) == nil)
+
+        let restoredTracker = BatteryDischargeEstimateTracker(
+            rateStore: UserDefaultsBatteryDischargeRateStore(userDefaults: defaults)
+        )
+
+        #expect(
+            restoredTracker.estimateUsingCachedRate(
+                registrySnapshot: snapshot,
+                now: start.addingTimeInterval(10)
+            ) == nil
+        )
+    }
+
+    @Test func implausiblePersistedFallbackRateIsRejected() {
+        let tracker = BatteryDischargeEstimateTracker(
+            rateStore: StaticRateStore(
+                baseline: PersistedDischargeRateBaseline(shortTermRate: 100, longTermRate: nil)
+            )
+        )
+        let snapshot = BatteryRegistrySnapshot(
+            rawCurrentCapacity: 5400,
+            rawMaxCapacity: 5800,
+            amperage: -900,
+            instantAmperage: nil,
+            timeRemainingMinutes: nil,
+            averageTimeToFullMinutes: nil,
+            averageTimeToEmptyMinutes: nil
+        )
+
+        #expect(tracker.estimateUsingCachedRate(registrySnapshot: snapshot) == nil)
+    }
+
+    @Test func transientInvalidationClearsSessionCacheButPreservesPersistedFallback() {
+        let suiteName = "BatteryDischargeEstimateTrackerTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            Issue.record("Expected isolated user defaults suite")
+            return
+        }
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        let store = UserDefaultsBatteryDischargeRateStore(userDefaults: defaults)
+        let tracker = BatteryDischargeEstimateTracker(rateStore: store)
+        let start = Date()
+        let steadySnapshot = BatteryRegistrySnapshot(
+            rawCurrentCapacity: 5400,
+            rawMaxCapacity: 5800,
+            amperage: -1200,
+            instantAmperage: nil,
+            timeRemainingMinutes: nil,
+            averageTimeToFullMinutes: nil,
+            averageTimeToEmptyMinutes: nil
+        )
+        let seededSnapshot = BatteryRegistrySnapshot(
+            rawCurrentCapacity: 5100,
+            rawMaxCapacity: 5800,
+            amperage: -600,
+            instantAmperage: nil,
+            timeRemainingMinutes: nil,
+            averageTimeToFullMinutes: nil,
+            averageTimeToEmptyMinutes: nil
+        )
+
+        _ = tracker.recordAndEstimate(registrySnapshot: steadySnapshot, now: start)
+        _ = tracker.recordAndEstimate(registrySnapshot: steadySnapshot, now: start.addingTimeInterval(1))
+        #expect(tracker.recordAndEstimate(registrySnapshot: steadySnapshot, now: start.addingTimeInterval(2)) == 270)
+
+        tracker.cacheResolvedEstimate(registrySnapshot: seededSnapshot, minutes: 510)
+        #expect(tracker.estimateUsingCachedRate(registrySnapshot: seededSnapshot) == 510)
+
+        tracker.invalidateTransientState()
+
+        #expect(
+            tracker.estimateUsingCachedRate(
+                registrySnapshot: seededSnapshot,
+                now: start.addingTimeInterval(10)
+            ) == 255
+        )
     }
 
     @Test func persistedBaselinesSurviveAcrossTrackerInstances() {

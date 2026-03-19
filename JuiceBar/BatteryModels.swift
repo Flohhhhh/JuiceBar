@@ -14,6 +14,11 @@ enum BatteryEstimateSource: Equatable {
     case derived
 }
 
+enum BatteryEstimateKind {
+    case charging
+    case discharging
+}
+
 enum BatteryDebugLog {
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.camerongustavson.JuiceBar",
@@ -25,6 +30,69 @@ enum BatteryDebugLog {
         guard enabled else { return }
         let value = message()
         logger.debug("\(value, privacy: .public)")
+    }
+}
+
+enum BatteryEstimateSafetyPolicy {
+    static let maximumDischargeMinutes = 24 * 60
+    static let maximumChargingMinutes = 12 * 60
+    private static let sentinelMinutes = 65_535
+
+    static func validatedMinutes(_ minutes: Int?, kind: BatteryEstimateKind, source: String) -> Int? {
+        guard let minutes else {
+            return nil
+        }
+
+        guard minutes > 0 else {
+            BatteryDebugLog.message("estimate-safety drop source=\(source) reason=non-positive minutes=\(minutes)")
+            return nil
+        }
+
+        guard minutes != sentinelMinutes else {
+            BatteryDebugLog.message("estimate-safety drop source=\(source) reason=sentinel minutes=\(minutes)")
+            return nil
+        }
+
+        let maximumMinutes = maximumMinutes(for: kind)
+        guard minutes <= maximumMinutes else {
+            BatteryDebugLog.message(
+                "estimate-safety drop source=\(source) reason=exceeds-cap minutes=\(minutes) cap=\(maximumMinutes)"
+            )
+            return nil
+        }
+
+        return minutes
+    }
+
+    static func validatedDischargeMinutes(
+        currentCapacity: Int?,
+        dischargeRate: Int?,
+        source: String
+    ) -> Int? {
+        guard
+            let currentCapacity,
+            currentCapacity > 0,
+            let dischargeRate,
+            dischargeRate > 0
+        else {
+            return nil
+        }
+
+        let minutes = max(1, Int((Double(currentCapacity) / Double(dischargeRate) * 60.0).rounded(.down)))
+        return validatedMinutes(minutes, kind: .discharging, source: source)
+    }
+
+    static func kind(isCharging: Bool) -> BatteryEstimateKind {
+        isCharging ? .charging : .discharging
+    }
+
+    private static func maximumMinutes(for kind: BatteryEstimateKind) -> Int {
+        switch kind {
+        case .charging:
+            return maximumChargingMinutes
+        case .discharging:
+            return maximumDischargeMinutes
+        }
     }
 }
 
@@ -201,35 +269,46 @@ enum BatteryStateStabilizer {
     private static let derivedEstimateFreshWeight = 0.75
 
     static func stabilize(previous: BatteryState, fresh: BatteryState, now: Date = Date()) -> BatteryState {
-        if let smoothed = smoothedDerivedEstimate(previous: previous, fresh: fresh) {
+        let sanitizedPrevious = sanitizedState(previous, source: "stabilizer-previous")
+        let sanitizedFresh = sanitizedState(fresh, source: "stabilizer-fresh")
+        let freshHadUnsafeEstimate = fresh.timeRemainingMinutes != nil && sanitizedFresh.timeRemainingMinutes == nil
+
+        if freshHadUnsafeEstimate {
+            return sanitizedFresh
+        }
+
+        if let smoothed = smoothedDerivedEstimate(previous: sanitizedPrevious, fresh: sanitizedFresh) {
             return smoothed
         }
 
         guard
-            fresh.timeRemainingMinutes == nil,
-            let previousMinutes = previous.timeRemainingMinutes,
-            let estimateDate = previous.estimateDate,
-            previous.hasBattery,
-            fresh.hasBattery,
-            !fresh.isFull
+            sanitizedFresh.timeRemainingMinutes == nil,
+            let previousMinutes = sanitizedPrevious.timeRemainingMinutes,
+            let estimateDate = sanitizedPrevious.estimateDate,
+            sanitizedPrevious.hasBattery,
+            sanitizedFresh.hasBattery,
+            !sanitizedFresh.isFull
         else {
-            return fresh
+            return sanitizedFresh
         }
 
         let estimateAge = now.timeIntervalSince(estimateDate)
         guard estimateAge >= 0 else {
-            return fresh
+            return sanitizedFresh
         }
 
-        if previous.isCharging == fresh.isCharging, previous.isFull == fresh.isFull, estimateAge <= sameModeReuseWindow {
-            guard previous.powerSource == fresh.powerSource else {
-                return fresh
+        if sanitizedPrevious.isCharging == sanitizedFresh.isCharging,
+            sanitizedPrevious.isFull == sanitizedFresh.isFull,
+            estimateAge <= sameModeReuseWindow
+        {
+            guard sanitizedPrevious.powerSource == sanitizedFresh.powerSource else {
+                return sanitizedFresh
             }
 
-            return fresh.withEstimate(previousMinutes, date: estimateDate)
+            return sanitizedFresh.withEstimate(previousMinutes, date: estimateDate)
         }
 
-        return fresh
+        return sanitizedFresh
     }
 
     private static func smoothedDerivedEstimate(previous: BatteryState, fresh: BatteryState) -> BatteryState? {
@@ -246,12 +325,49 @@ enum BatteryStateStabilizer {
             return nil
         }
 
+        let kind = BatteryEstimateSafetyPolicy.kind(isCharging: fresh.isCharging)
+        guard
+            BatteryEstimateSafetyPolicy.validatedMinutes(
+                previousMinutes,
+                kind: kind,
+                source: "stabilizer-derived-previous"
+            ) != nil,
+            BatteryEstimateSafetyPolicy.validatedMinutes(
+                freshMinutes,
+                kind: kind,
+                source: "stabilizer-derived-fresh"
+            ) != nil
+        else {
+            return nil
+        }
+
         let smoothedMinutes = Int(
             (Double(previousMinutes) * (1 - derivedEstimateFreshWeight) + Double(freshMinutes) * derivedEstimateFreshWeight)
                 .rounded()
         )
 
-        return fresh.withEstimate(smoothedMinutes, date: fresh.estimateDate ?? Date(), source: .derived)
+        guard let validatedSmoothedMinutes = BatteryEstimateSafetyPolicy.validatedMinutes(
+            smoothedMinutes,
+            kind: kind,
+            source: "stabilizer-derived-smoothed"
+        ) else {
+            return fresh.withoutEstimate()
+        }
+
+        return fresh.withEstimate(validatedSmoothedMinutes, date: fresh.estimateDate ?? Date(), source: .derived)
+    }
+
+    private static func sanitizedState(_ state: BatteryState, source: String) -> BatteryState {
+        guard let minutes = state.timeRemainingMinutes else {
+            return state
+        }
+
+        let kind = BatteryEstimateSafetyPolicy.kind(isCharging: state.isCharging)
+        guard BatteryEstimateSafetyPolicy.validatedMinutes(minutes, kind: kind, source: source) != nil else {
+            return state.withoutEstimate()
+        }
+
+        return state
     }
 }
 
@@ -263,6 +379,14 @@ extension BatteryState {
         if let source {
             copy.estimateSource = source
         }
+        return copy
+    }
+
+    func withoutEstimate() -> BatteryState {
+        var copy = self
+        copy.timeRemainingMinutes = nil
+        copy.estimateDate = nil
+        copy.estimateSource = .none
         return copy
     }
 

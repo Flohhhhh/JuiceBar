@@ -40,12 +40,19 @@ Juice Bar stores two smoothed discharge-rate baselines in `UserDefaults`:
 - short-term baseline
 - long-term baseline
 
-These are used only for provisional discharge fallback.
+These are used only for provisional discharge fallback, and they survive app relaunches and machine restarts for the same macOS user account.
 
 Important constraint:
 
 - long-lived baselines are updated only from observed discharge samples
 - Apple/system estimates may seed the in-memory session fallback, but they do not persist into the long-term averages
+- transient in-memory estimate caches are cleared on wake, charging entry, and power-source transitions
+- any estimate outside the safety window is dropped and hidden instead of being clamped or reused
+
+Current safety caps:
+
+- discharge estimates must be between 1 and 1440 minutes
+- charging estimates must be between 1 and 720 minutes
 
 This keeps startup fallback available without letting optimistic system estimates permanently skew the stored baseline.
 

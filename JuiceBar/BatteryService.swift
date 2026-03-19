@@ -56,30 +56,52 @@ enum BatteryEstimateResolver {
     ) -> Int? {
         if isCharging {
             return firstAvailable([
-                sanitizedMinutes(descriptionTimeToFullMinutes),
-                sanitizedMinutes(registrySnapshot?.averageTimeToFullMinutes)
+                sanitizedMinutes(descriptionTimeToFullMinutes, kind: .charging, source: "resolver-description-full"),
+                sanitizedMinutes(
+                    registrySnapshot?.averageTimeToFullMinutes,
+                    kind: .charging,
+                    source: "resolver-registry-full"
+                )
             ])
         }
 
-        let iopsMinutes = iopsEstimateSeconds > 0 ? max(1, Int(iopsEstimateSeconds / 60.0)) : nil
+        let iopsMinutes = iopsEstimateSeconds > 0
+            ? sanitizedMinutes(
+                max(1, Int(iopsEstimateSeconds / 60.0)),
+                kind: .discharging,
+                source: "resolver-iops-empty"
+            )
+            : nil
         let registryMinutes = firstAvailable([
-            sanitizedMinutes(registrySnapshot?.timeRemainingMinutes),
-            sanitizedMinutes(registrySnapshot?.averageTimeToEmptyMinutes)
+            sanitizedMinutes(
+                registrySnapshot?.timeRemainingMinutes,
+                kind: .discharging,
+                source: "resolver-registry-empty"
+            ),
+            sanitizedMinutes(
+                registrySnapshot?.averageTimeToEmptyMinutes,
+                kind: .discharging,
+                source: "resolver-registry-avg-empty"
+            )
         ])
 
         return firstAvailable([
             (powerSource == .battery || powerSource == .ups) ? iopsMinutes : nil,
-            sanitizedMinutes(descriptionTimeToEmptyMinutes),
+            sanitizedMinutes(
+                descriptionTimeToEmptyMinutes,
+                kind: .discharging,
+                source: "resolver-description-empty"
+            ),
             registryMinutes
         ])
     }
 
-    static func sanitizedMinutes(_ minutes: Int?) -> Int? {
-        guard let minutes, minutes >= 0, minutes != 65_535 else {
-            return nil
-        }
-
-        return max(1, minutes)
+    static func sanitizedMinutes(
+        _ minutes: Int?,
+        kind: BatteryEstimateKind = .discharging,
+        source: String = "resolver"
+    ) -> Int? {
+        BatteryEstimateSafetyPolicy.validatedMinutes(minutes, kind: kind, source: source)
     }
 
     static func minutesFromAmperage(
@@ -104,16 +126,23 @@ enum BatteryEstimateResolver {
 
             let remainingCapacity = maxCapacity - currentCapacity
             let hoursToFull = Double(remainingCapacity) / Double(amperage)
-            return max(1, Int((hoursToFull * 60.0).rounded(.down)))
+            let minutes = max(1, Int((hoursToFull * 60.0).rounded(.down)))
+            return BatteryEstimateSafetyPolicy.validatedMinutes(
+                minutes,
+                kind: .charging,
+                source: "resolver-amperage-full"
+            )
         }
 
         guard amperage < 0, let currentCapacity, currentCapacity > 0 else {
             return nil
         }
 
-        let dischargeRate = Double(-amperage)
-        let hoursToEmpty = Double(currentCapacity) / dischargeRate
-        return max(1, Int((hoursToEmpty * 60.0).rounded(.down)))
+        return BatteryEstimateSafetyPolicy.validatedDischargeMinutes(
+            currentCapacity: currentCapacity,
+            dischargeRate: -amperage,
+            source: "resolver-amperage-empty"
+        )
     }
 
     static func shouldPreferDescriptionEstimate(
@@ -319,6 +348,11 @@ final class BatteryDischargeEstimateTracker {
         samples.removeAll()
     }
 
+    func invalidateTransientState() {
+        reset()
+        cachedRate = nil
+    }
+
     func debugSummary(now: Date = Date()) -> String {
         let persistedBaseline = rateStore.loadBaseline(now: now)
         let cachedSummary: String
@@ -368,9 +402,17 @@ final class BatteryDischargeEstimateTracker {
         }
 
         let medianRate = median(samples.map(\.dischargeRate))
+        guard let minutes = BatteryEstimateSafetyPolicy.validatedDischargeMinutes(
+            currentCapacity: currentCapacity,
+            dischargeRate: medianRate,
+            source: "tracker-observed-rate"
+        ) else {
+            return nil
+        }
+
         cachedRate = CachedRate(dischargeRate: medianRate)
         rateStore.recordObservedRate(medianRate, now: now)
-        return max(1, Int((Double(currentCapacity) / Double(medianRate) * 60.0).rounded(.down)))
+        return minutes
     }
 
     func estimateUsingCachedRate(registrySnapshot: BatteryRegistrySnapshot?, now: Date = Date()) -> Int? {
@@ -382,30 +424,49 @@ final class BatteryDischargeEstimateTracker {
         }
 
         let persistedBaseline = rateStore.loadBaseline(now: now)
-        let dischargeRate = cachedRate?.dischargeRate
-            ?? persistedBaseline.shortTermRate
-            ?? persistedBaseline.longTermRate
+        let candidates: [(Int?, String)] = [
+            (cachedRate?.dischargeRate, "tracker-session-cache"),
+            (persistedBaseline.shortTermRate, "tracker-persisted-short"),
+            (persistedBaseline.longTermRate, "tracker-persisted-long")
+        ]
 
-        guard let dischargeRate else {
-            return nil
+        for (dischargeRate, source) in candidates {
+            if let minutes = BatteryEstimateSafetyPolicy.validatedDischargeMinutes(
+                currentCapacity: currentCapacity,
+                dischargeRate: dischargeRate,
+                source: source
+            ) {
+                return minutes
+            }
         }
 
-        return max(1, Int((Double(currentCapacity) / Double(dischargeRate) * 60.0).rounded(.down)))
+        return nil
     }
 
     func cacheResolvedEstimate(registrySnapshot: BatteryRegistrySnapshot?, minutes: Int?) {
         guard
             let currentCapacity = registrySnapshot?.rawCurrentCapacity,
             currentCapacity > 0,
-            let minutes,
-            minutes > 0,
+            let safeMinutes = BatteryEstimateSafetyPolicy.validatedMinutes(
+                minutes,
+                kind: .discharging,
+                source: "tracker-resolved-seed"
+            ),
             let effectiveAmperage = registrySnapshot?.effectiveAmperage,
             effectiveAmperage < 0
         else {
             return
         }
 
-        let dischargeRate = max(1, Int((Double(currentCapacity) / Double(minutes) * 60.0).rounded()))
+        let dischargeRate = max(1, Int((Double(currentCapacity) / Double(safeMinutes) * 60.0).rounded()))
+        guard BatteryEstimateSafetyPolicy.validatedDischargeMinutes(
+            currentCapacity: currentCapacity,
+            dischargeRate: dischargeRate,
+            source: "tracker-resolved-seed-rate"
+        ) != nil else {
+            return
+        }
+
         let observedRate = -effectiveAmperage
         let largerRate = max(dischargeRate, observedRate)
         let smallerRate = max(1, min(dischargeRate, observedRate))
@@ -468,13 +529,18 @@ final class BatteryService {
         }
     }
 
+    func invalidateTransientEstimateState(reason: String = "manual") {
+        BatteryDebugLog.message("event=estimate-transient-invalidation reason=\(reason)")
+        dischargeEstimateTracker.invalidateTransientState()
+    }
+
     func fetchState() -> BatteryState {
         let now = Date()
         guard
             let snapshot = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
             let sourceList = IOPSCopyPowerSourcesList(snapshot)?.takeRetainedValue() as? [CFTypeRef]
         else {
-            dischargeEstimateTracker.reset()
+            invalidateTransientEstimateState(reason: "no-power-sources")
             BatteryDebugLog.message("refresh raw=no-power-sources")
             return BatteryState(
                 hasBattery: false,
@@ -497,7 +563,7 @@ final class BatteryService {
             .first
 
         guard let batteryDescription else {
-            dischargeEstimateTracker.reset()
+            invalidateTransientEstimateState(reason: "no-internal-battery")
             BatteryDebugLog.message("refresh raw=no-internal-battery reportedSource=\(resolvedPowerSource(snapshot: snapshot).debugName)")
             return BatteryState(
                 hasBattery: false,
@@ -634,8 +700,14 @@ final class BatteryService {
 
         let trackerEstimate = dischargeEstimateTracker.recordAndEstimate(registrySnapshot: registrySnapshot, now: now)
         let iopsEstimateSeconds = IOPSGetTimeRemainingEstimate()
-        if (powerSource == .battery || powerSource == .ups), iopsEstimateSeconds > 0 {
-            let iopsMinutes = max(1, Int(iopsEstimateSeconds / 60.0))
+        let iopsMinutes = iopsEstimateSeconds > 0
+            ? BatteryEstimateResolver.sanitizedMinutes(
+                max(1, Int(iopsEstimateSeconds / 60.0)),
+                kind: .discharging,
+                source: "service-iops-empty"
+            )
+            : nil
+        if (powerSource == .battery || powerSource == .ups), let iopsMinutes {
             dischargeEstimateTracker.cacheResolvedEstimate(
                 registrySnapshot: registrySnapshot,
                 minutes: iopsMinutes
@@ -647,9 +719,20 @@ final class BatteryService {
             )
         }
 
-        let descriptionEstimate = BatteryEstimateResolver.sanitizedMinutes(description[kIOPSTimeToEmptyKey] as? Int)
-        let registryEstimate = BatteryEstimateResolver.sanitizedMinutes(registrySnapshot?.timeRemainingMinutes)
-            ?? BatteryEstimateResolver.sanitizedMinutes(registrySnapshot?.averageTimeToEmptyMinutes)
+        let descriptionEstimate = BatteryEstimateResolver.sanitizedMinutes(
+            description[kIOPSTimeToEmptyKey] as? Int,
+            kind: .discharging,
+            source: "service-description-empty"
+        )
+        let registryEstimate = BatteryEstimateResolver.sanitizedMinutes(
+            registrySnapshot?.timeRemainingMinutes,
+            kind: .discharging,
+            source: "service-registry-empty"
+        ) ?? BatteryEstimateResolver.sanitizedMinutes(
+            registrySnapshot?.averageTimeToEmptyMinutes,
+            kind: .discharging,
+            source: "service-registry-avg-empty"
+        )
 
         if BatteryEstimateResolver.shouldPreferDescriptionEstimate(
             descriptionEstimate: descriptionEstimate,
@@ -704,6 +787,7 @@ final class BatteryService {
             let previousPowerSource = lastObservedPowerSource?.debugName ?? "nil"
             lastObservedPowerSource = currentPowerSource
             lastPowerSourceChangeDate = now
+            invalidateTransientEstimateState(reason: "power-source-transition")
             BatteryDebugLog.message(
                 "event=power-source-transition previous=\(previousPowerSource) current=\(currentPowerSource.debugName)"
             )
@@ -715,6 +799,9 @@ final class BatteryService {
             let previousChargingState = lastObservedChargingState.map(String.init) ?? "nil"
             lastObservedChargingState = isCharging
             lastChargingStateChangeDate = now
+            if isCharging {
+                invalidateTransientEstimateState(reason: "charging-started")
+            }
             BatteryDebugLog.message(
                 "event=charging-transition previous=\(previousChargingState) current=\(isCharging)"
             )
@@ -838,11 +925,23 @@ final class BatteryService {
         now: Date
     ) {
         let iopsEstimateSeconds = IOPSGetTimeRemainingEstimate()
-        let iopsMinutes = iopsEstimateSeconds > 0 ? String(max(1, Int(iopsEstimateSeconds / 60.0))) : "nil"
-        let descriptionTimeToEmpty = BatteryEstimateResolver.sanitizedMinutes(description[kIOPSTimeToEmptyKey] as? Int)
-            .map(String.init) ?? "nil"
-        let descriptionTimeToFull = BatteryEstimateResolver.sanitizedMinutes(description[kIOPSTimeToFullChargeKey] as? Int)
-            .map(String.init) ?? "nil"
+        let iopsMinutes = iopsEstimateSeconds > 0
+            ? BatteryEstimateResolver.sanitizedMinutes(
+                max(1, Int(iopsEstimateSeconds / 60.0)),
+                kind: .discharging,
+                source: "log-iops-empty"
+            ).map(String.init) ?? "nil"
+            : "nil"
+        let descriptionTimeToEmpty = BatteryEstimateResolver.sanitizedMinutes(
+            description[kIOPSTimeToEmptyKey] as? Int,
+            kind: .discharging,
+            source: "log-description-empty"
+        ).map(String.init) ?? "nil"
+        let descriptionTimeToFull = BatteryEstimateResolver.sanitizedMinutes(
+            description[kIOPSTimeToFullChargeKey] as? Int,
+            kind: .charging,
+            source: "log-description-full"
+        ).map(String.init) ?? "nil"
         let dischargeWarmup = isInDischargeWarmupWindow(now: now, powerSource: effectivePowerSource)
         let chargingWarmup = isInChargingWarmupWindow(now: now)
 

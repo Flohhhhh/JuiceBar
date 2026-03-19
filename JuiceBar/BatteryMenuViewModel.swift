@@ -52,6 +52,7 @@ final class BatteryMenuViewModel: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
+                self?.batteryService.invalidateTransientEstimateState(reason: "wake")
                 self?.activateFastRefreshWindow(duration: RefreshPolicy.fastInterval * 3)
                 self?.scheduleRefresh()
             }

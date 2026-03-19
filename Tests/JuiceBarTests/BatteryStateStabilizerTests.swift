@@ -136,4 +136,70 @@ struct BatteryStateStabilizerTests {
         #expect(stabilized.timeRemainingMinutes == 148)
         #expect(stabilized.estimateSource == .derived)
     }
+
+    @Test func hidesFreshDerivedOutlierInsteadOfSmoothingOrReusingPreviousEstimate() {
+        let estimateDate = Date()
+        let previous = BatteryState(
+            hasBattery: true,
+            percentage: 94,
+            isCharging: false,
+            isFull: false,
+            powerSource: .battery,
+            timeRemainingMinutes: 51,
+            estimateDate: estimateDate,
+            estimateSource: .derived
+        )
+        let fresh = BatteryState(
+            hasBattery: true,
+            percentage: 94,
+            isCharging: false,
+            isFull: false,
+            powerSource: .battery,
+            timeRemainingMinutes: 2_000,
+            estimateDate: estimateDate.addingTimeInterval(2),
+            estimateSource: .derived
+        )
+
+        let stabilized = BatteryStateStabilizer.stabilize(
+            previous: previous,
+            fresh: fresh,
+            now: estimateDate.addingTimeInterval(2)
+        )
+
+        #expect(stabilized.timeRemainingMinutes == nil)
+        #expect(stabilized.estimateSource == .none)
+    }
+
+    @Test func doesNotReusePreviousEstimateWhenPreviousValueIsOutsideSafetyWindow() {
+        let estimateDate = Date()
+        let previous = BatteryState(
+            hasBattery: true,
+            percentage: 57,
+            isCharging: false,
+            isFull: false,
+            powerSource: .battery,
+            timeRemainingMinutes: 2_000,
+            estimateDate: estimateDate,
+            estimateSource: .system
+        )
+        let fresh = BatteryState(
+            hasBattery: true,
+            percentage: 56,
+            isCharging: false,
+            isFull: false,
+            powerSource: .battery,
+            timeRemainingMinutes: nil,
+            estimateDate: nil,
+            estimateSource: .none
+        )
+
+        let stabilized = BatteryStateStabilizer.stabilize(
+            previous: previous,
+            fresh: fresh,
+            now: estimateDate.addingTimeInterval(30)
+        )
+
+        #expect(stabilized.timeRemainingMinutes == nil)
+        #expect(stabilized.estimateSource == .none)
+    }
 }
