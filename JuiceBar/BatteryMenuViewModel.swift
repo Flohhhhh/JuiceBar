@@ -141,6 +141,23 @@ final class BatteryMenuViewModel: ObservableObject {
         return batteryState.isCharging ? "\(time) to full" : time
     }
 
+    var absoluteTimeText: String? {
+        guard batteryState.hasBattery, !batteryState.isFull else {
+            return nil
+        }
+
+        if batteryState.powerSource == .ac && !batteryState.isCharging {
+            return nil
+        }
+
+        guard let minutes = batteryState.timeRemainingMinutes else {
+            return nil
+        }
+
+        let time = absoluteEstimateTimeText(minutes: minutes)
+        return batteryState.isCharging ? "Full at \(time)" : "Runs out at \(time)"
+    }
+
     var stateIndicator: BatteryStateIndicator {
         BatteryStateIndicator.resolve(from: batteryState)
     }
@@ -354,6 +371,13 @@ final class BatteryMenuViewModel: ObservableObject {
         }
 
         return "\(chargingWatts)W"
+    }
+
+    private func absoluteEstimateTimeText(minutes: Int) -> String {
+        BatteryTimeFormatter.formatAbsolute(
+            minutes: minutes,
+            estimateDate: batteryState.estimateDate
+        )
     }
 
     private func menuBarDisplayText(baseText: String) -> String {

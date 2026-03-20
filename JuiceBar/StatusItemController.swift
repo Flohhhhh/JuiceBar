@@ -93,6 +93,7 @@ final class StatusItemController: NSObject {
     private func updateInfoView() {
         infoView.update(
             headline: viewModel.headlineText,
+            absoluteTime: viewModel.absoluteTimeText,
             percentage: "\(viewModel.percentageText) battery",
             status: "Status: \(viewModel.statusText)",
             dataSource: "Data Source: \(viewModel.dataSourceText)",
@@ -132,6 +133,7 @@ private final class BatteryMenuInfoView: NSView {
     }
 
     private let headlineLabel = BatteryMenuInfoView.makePrimaryLabel()
+    private let absoluteTimeLabel = BatteryMenuInfoView.makeSecondaryLabel()
     private let percentageLabel = BatteryMenuInfoView.makeSecondaryLabel()
     private let divider = NSBox()
     private let infoHeader = BatteryMenuInfoView.makeHeaderLabel("Info")
@@ -149,8 +151,17 @@ private final class BatteryMenuInfoView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func update(headline: String, percentage: String, status: String, dataSource: String, chargingPower: String?) {
+    func update(
+        headline: String,
+        absoluteTime: String?,
+        percentage: String,
+        status: String,
+        dataSource: String,
+        chargingPower: String?
+    ) {
         headlineLabel.stringValue = headline
+        absoluteTimeLabel.stringValue = absoluteTime ?? ""
+        absoluteTimeLabel.isHidden = absoluteTime == nil
         percentageLabel.stringValue = percentage
         statusLabel.stringValue = status
         dataSourceLabel.stringValue = dataSource
@@ -164,6 +175,9 @@ private final class BatteryMenuInfoView: NSView {
     override var intrinsicContentSize: NSSize {
         let contentWidth = Metrics.width - (Metrics.horizontalInset * 2)
         let headlineHeight = headlineLabel.sizeThatFits(width: contentWidth).height
+        let absoluteTimeHeight = absoluteTimeLabel.isHidden
+            ? 0
+            : absoluteTimeLabel.sizeThatFits(width: contentWidth).height + Metrics.lineSpacing
         let percentageHeight = percentageLabel.sizeThatFits(width: contentWidth).height
         let statusHeight = statusLabel.sizeThatFits(width: contentWidth).height
         let sourceHeight = dataSourceLabel.sizeThatFits(width: contentWidth).height
@@ -174,6 +188,7 @@ private final class BatteryMenuInfoView: NSView {
         let totalHeight =
             Metrics.verticalInset
             + headlineHeight
+            + absoluteTimeHeight
             + Metrics.lineSpacing
             + percentageHeight
             + Metrics.dividerSpacing
@@ -197,6 +212,10 @@ private final class BatteryMenuInfoView: NSView {
         var y = bounds.height - Metrics.verticalInset
 
         y = place(headlineLabel, atY: y, width: contentWidth)
+        if !absoluteTimeLabel.isHidden {
+            y -= Metrics.lineSpacing
+            y = place(absoluteTimeLabel, atY: y, width: contentWidth)
+        }
         y -= Metrics.lineSpacing
         y = place(percentageLabel, atY: y, width: contentWidth)
         y -= Metrics.dividerSpacing
@@ -217,9 +236,10 @@ private final class BatteryMenuInfoView: NSView {
     private func setupView() {
         divider.boxType = .separator
 
+        absoluteTimeLabel.isHidden = true
         chargingPowerLabel.isHidden = true
 
-        for label in [headlineLabel, percentageLabel, infoHeader, statusLabel, dataSourceLabel, chargingPowerLabel] {
+        for label in [headlineLabel, absoluteTimeLabel, percentageLabel, infoHeader, statusLabel, dataSourceLabel, chargingPowerLabel] {
             addSubview(label)
         }
         addSubview(divider)

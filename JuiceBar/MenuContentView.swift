@@ -8,6 +8,9 @@ struct MenuContentView: View {
             Section("JuiceBar") {
                 Text(viewModel.headlineText)
                     .monospacedDigit()
+                if let absoluteTimeText = viewModel.absoluteTimeText {
+                    Text(absoluteTimeText)
+                }
                 Text("\(viewModel.percentageText) battery")
             }
 
