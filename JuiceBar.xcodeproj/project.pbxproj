@@ -17,6 +17,7 @@
 		A10000080000000000000008 /* MenuContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000180000000000000018 /* MenuContentView.swift */; };
 		A10000090000000000000009 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A100001A000000000000001A /* Assets.xcassets */; };
 		A100000A000000000000000A /* StatusItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100001B000000000000001B /* StatusItemController.swift */; };
+		A100000B000000000000000B /* ChargingWattagePreferenceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100001C000000000000001C /* ChargingWattagePreferenceStore.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -32,6 +33,7 @@
 		A10000190000000000000019 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A100001A000000000000001A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A100001B000000000000001B /* StatusItemController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusItemController.swift; sourceTree = "<group>"; };
+		A100001C000000000000001C /* ChargingWattagePreferenceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChargingWattagePreferenceStore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -65,6 +67,7 @@
 				A10000170000000000000017 /* LaunchAtLoginService.swift */,
 				A10000180000000000000018 /* MenuContentView.swift */,
 				A100001B000000000000001B /* StatusItemController.swift */,
+				A100001C000000000000001C /* ChargingWattagePreferenceStore.swift */,
 				A10000190000000000000019 /* Info.plist */,
 				A100001A000000000000001A /* Assets.xcassets */,
 			);
@@ -158,6 +161,7 @@
 				A10000070000000000000007 /* LaunchAtLoginService.swift in Sources */,
 				A10000080000000000000008 /* MenuContentView.swift in Sources */,
 				A100000A000000000000000A /* StatusItemController.swift in Sources */,
+				A100000B000000000000000B /* ChargingWattagePreferenceStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -19,6 +19,38 @@ enum BatteryEstimateKind {
     case discharging
 }
 
+enum BatteryChargingPowerResolver {
+    static let maximumChargingWatts = 200
+
+    static func resolve(
+        registrySnapshot: BatteryRegistrySnapshot?,
+        isCharging: Bool,
+        isFull: Bool
+    ) -> Int? {
+        guard
+            isCharging,
+            !isFull,
+            let voltageMillivolts = registrySnapshot?.voltage,
+            voltageMillivolts > 0,
+            let amperageMilliamps = registrySnapshot?.effectiveAmperage,
+            amperageMilliamps > 0
+        else {
+            return nil
+        }
+
+        let watts = Int(
+            (Double(voltageMillivolts) * Double(amperageMilliamps) / 1_000_000.0)
+                .rounded()
+        )
+
+        guard watts > 0, watts <= maximumChargingWatts else {
+            return nil
+        }
+
+        return watts
+    }
+}
+
 enum BatteryDebugLog {
     private static let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "com.camerongustavson.JuiceBar",
@@ -105,6 +137,7 @@ struct BatteryState: Equatable {
     var timeRemainingMinutes: Int?
     var estimateDate: Date?
     var estimateSource: BatteryEstimateSource = .none
+    var chargingWatts: Int? = nil
 }
 
 extension BatteryPowerSource {
@@ -398,7 +431,8 @@ extension BatteryState {
             "charging=\(isCharging)",
             "full=\(isFull)",
             "minutes=\(timeRemainingMinutes.map(String.init) ?? "nil")",
-            "estimateSource=\(estimateSource.debugName)"
+            "estimateSource=\(estimateSource.debugName)",
+            "watts=\(chargingWatts.map(String.init) ?? "nil")"
         ].joined(separator: " ")
     }
 }

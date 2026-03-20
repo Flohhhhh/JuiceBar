@@ -11,8 +11,9 @@ final class BatteryMenuViewModel: ObservableObject {
         static let powerChangeFastWindow: TimeInterval = 15
     }
 
-    private let batteryService: BatteryService
+    private let batteryService: any BatteryStateService
     private let launchAtLoginService: LaunchAtLoginService
+    private let chargingWattagePreferenceStore: any ChargingWattagePreferenceStore
 
     private var refreshTimer: Timer?
     private var refreshTask: Task<Void, Never>?
@@ -31,50 +32,63 @@ final class BatteryMenuViewModel: ObservableObject {
         estimateSource: .none
     )
     @Published private(set) var launchAtLoginState = LaunchAtLoginState(status: .disabled, note: nil)
+    @Published private(set) var showsChargingWattageInMenuBar = false
     @Published private(set) var errorMessage: String?
 
     init(
-        batteryService: BatteryService = BatteryService(),
-        launchAtLoginService: LaunchAtLoginService = LaunchAtLoginService()
+        batteryService: any BatteryStateService = BatteryService(),
+        launchAtLoginService: LaunchAtLoginService = LaunchAtLoginService(),
+        chargingWattagePreferenceStore: any ChargingWattagePreferenceStore = UserDefaultsChargingWattagePreferenceStore(),
+        autoRefresh: Bool = true
     ) {
         self.batteryService = batteryService
         self.launchAtLoginService = launchAtLoginService
+        self.chargingWattagePreferenceStore = chargingWattagePreferenceStore
+        self.showsChargingWattageInMenuBar = chargingWattagePreferenceStore.showsChargingWattageInMenuBar
 
-        batteryService.onPowerSourceChange = { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.scheduleRefresh(after: .milliseconds(400))
+        if autoRefresh {
+            batteryService.onPowerSourceChange = { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.scheduleRefresh(after: .milliseconds(400))
+                }
             }
-        }
 
-        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didWakeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.batteryService.invalidateTransientEstimateState(reason: "wake")
-                self?.activateFastRefreshWindow(duration: RefreshPolicy.fastInterval * 3)
-                self?.scheduleRefresh()
+            wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+                forName: NSWorkspace.didWakeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.batteryService.invalidateTransientEstimateState(reason: "wake")
+                    self?.activateFastRefreshWindow(duration: RefreshPolicy.fastInterval * 3)
+                    self?.scheduleRefresh()
+                }
             }
-        }
 
-        refresh()
+            refresh()
+        } else {
+            launchAtLoginState = launchAtLoginService.currentState()
+        }
     }
 
     var displayText: String {
+        let baseText: String
+
         guard batteryState.hasBattery else {
             return "--"
         }
 
         if batteryState.isFull {
-            return "Full"
+            baseText = "Full"
+            return menuBarDisplayText(baseText: baseText)
         }
 
         guard let minutes = batteryState.timeRemainingMinutes else {
             return "--"
         }
 
-        return BatteryTimeFormatter.format(minutes: minutes)
+        baseText = BatteryTimeFormatter.format(minutes: minutes)
+        return menuBarDisplayText(baseText: baseText)
     }
 
     var showsChargingBolt: Bool {
@@ -192,6 +206,14 @@ final class BatteryMenuViewModel: ObservableObject {
         return batteryState.estimateSource.menuLabel
     }
 
+    var chargingPowerText: String? {
+        guard let chargingWattageText else {
+            return nil
+        }
+
+        return "Charging Power: \(chargingWattageText)"
+    }
+
     var launchAtLoginEnabled: Bool {
         launchAtLoginState.toggleValue
     }
@@ -262,6 +284,13 @@ final class BatteryMenuViewModel: ObservableObject {
         }
     }
 
+    func setShowsChargingWattageInMenuBar(_ enabled: Bool) {
+        guard showsChargingWattageInMenuBar != enabled else { return }
+
+        chargingWattagePreferenceStore.showsChargingWattageInMenuBar = enabled
+        showsChargingWattageInMenuBar = enabled
+    }
+
     func quit() {
         NSApplication.shared.terminate(nil)
     }
@@ -311,6 +340,28 @@ final class BatteryMenuViewModel: ObservableObject {
 
     private var shouldRefreshAggressively: Bool {
         batteryState.hasBattery && !batteryState.isFull && batteryState.timeRemainingMinutes == nil
+    }
+
+    private var chargingWattageText: String? {
+        guard
+            batteryState.hasBattery,
+            batteryState.isCharging,
+            !batteryState.isFull,
+            let chargingWatts = batteryState.chargingWatts,
+            chargingWatts > 0
+        else {
+            return nil
+        }
+
+        return "\(chargingWatts)W"
+    }
+
+    private func menuBarDisplayText(baseText: String) -> String {
+        guard showsChargingWattageInMenuBar, let chargingWattageText else {
+            return baseText
+        }
+
+        return "\(baseText) \(chargingWattageText)"
     }
 
     private func didMeaningfullyTransition(from previous: BatteryState, to current: BatteryState) -> Bool {

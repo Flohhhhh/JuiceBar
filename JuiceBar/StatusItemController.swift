@@ -9,6 +9,11 @@ final class StatusItemController: NSObject {
     private let menu = NSMenu()
     private let infoItem = NSMenuItem()
     private let infoView = BatteryMenuInfoView()
+    private let showChargingWattageItem = NSMenuItem(
+        title: "Show Charging Wattage in Menu Bar",
+        action: #selector(toggleShowChargingWattageInMenuBar),
+        keyEquivalent: ""
+    )
     private let refreshItem = NSMenuItem(title: "Refresh", action: #selector(refresh), keyEquivalent: "")
     private let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "")
     private var cancellables = Set<AnyCancellable>()
@@ -35,6 +40,10 @@ final class StatusItemController: NSObject {
         menu.addItem(infoItem)
         menu.addItem(.separator())
 
+        showChargingWattageItem.target = self
+        menu.addItem(showChargingWattageItem)
+        menu.addItem(.separator())
+
         refreshItem.target = self
         menu.addItem(refreshItem)
 
@@ -56,6 +65,7 @@ final class StatusItemController: NSObject {
 
     private func updateInterface() {
         statusItem.isVisible = viewModel.showsMenuBarItem
+        showChargingWattageItem.state = viewModel.showsChargingWattageInMenuBar ? .on : .off
         updateButton()
         updateInfoView()
     }
@@ -85,7 +95,8 @@ final class StatusItemController: NSObject {
             headline: viewModel.headlineText,
             percentage: "\(viewModel.percentageText) battery",
             status: "Status: \(viewModel.statusText)",
-            dataSource: "Data Source: \(viewModel.dataSourceText)"
+            dataSource: "Data Source: \(viewModel.dataSourceText)",
+            chargingPower: viewModel.chargingPowerText
         )
         sizeInfoView()
     }
@@ -98,6 +109,10 @@ final class StatusItemController: NSObject {
 
     @objc private func refresh() {
         viewModel.refresh()
+    }
+
+    @objc private func toggleShowChargingWattageInMenuBar() {
+        viewModel.setShowsChargingWattageInMenuBar(!viewModel.showsChargingWattageInMenuBar)
     }
 
     @objc private func quit() {
@@ -122,6 +137,7 @@ private final class BatteryMenuInfoView: NSView {
     private let infoHeader = BatteryMenuInfoView.makeHeaderLabel("Info")
     private let statusLabel = BatteryMenuInfoView.makeSecondaryLabel()
     private let dataSourceLabel = BatteryMenuInfoView.makeSecondaryLabel()
+    private let chargingPowerLabel = BatteryMenuInfoView.makeSecondaryLabel()
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -133,11 +149,13 @@ private final class BatteryMenuInfoView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func update(headline: String, percentage: String, status: String, dataSource: String) {
+    func update(headline: String, percentage: String, status: String, dataSource: String, chargingPower: String?) {
         headlineLabel.stringValue = headline
         percentageLabel.stringValue = percentage
         statusLabel.stringValue = status
         dataSourceLabel.stringValue = dataSource
+        chargingPowerLabel.stringValue = chargingPower ?? ""
+        chargingPowerLabel.isHidden = chargingPower == nil
         invalidateIntrinsicContentSize()
         frame.size = intrinsicContentSize
         needsLayout = true
@@ -149,6 +167,9 @@ private final class BatteryMenuInfoView: NSView {
         let percentageHeight = percentageLabel.sizeThatFits(width: contentWidth).height
         let statusHeight = statusLabel.sizeThatFits(width: contentWidth).height
         let sourceHeight = dataSourceLabel.sizeThatFits(width: contentWidth).height
+        let chargingPowerHeight = chargingPowerLabel.isHidden
+            ? 0
+            : chargingPowerLabel.sizeThatFits(width: contentWidth).height + Metrics.lineSpacing
 
         let totalHeight =
             Metrics.verticalInset
@@ -163,6 +184,7 @@ private final class BatteryMenuInfoView: NSView {
             + statusHeight
             + Metrics.lineSpacing
             + sourceHeight
+            + chargingPowerHeight
             + Metrics.verticalInset
 
         return NSSize(width: Metrics.width, height: ceil(totalHeight))
@@ -184,13 +206,20 @@ private final class BatteryMenuInfoView: NSView {
         y -= Metrics.lineSpacing
         y = place(statusLabel, atY: y, width: contentWidth)
         y -= Metrics.lineSpacing
-        _ = place(dataSourceLabel, atY: y, width: contentWidth)
+        y = place(dataSourceLabel, atY: y, width: contentWidth)
+
+        if !chargingPowerLabel.isHidden {
+            y -= Metrics.lineSpacing
+            _ = place(chargingPowerLabel, atY: y, width: contentWidth)
+        }
     }
 
     private func setupView() {
         divider.boxType = .separator
 
-        for label in [headlineLabel, percentageLabel, infoHeader, statusLabel, dataSourceLabel] {
+        chargingPowerLabel.isHidden = true
+
+        for label in [headlineLabel, percentageLabel, infoHeader, statusLabel, dataSourceLabel, chargingPowerLabel] {
             addSubview(label)
         }
         addSubview(divider)

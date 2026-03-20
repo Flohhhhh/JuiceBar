@@ -10,6 +10,7 @@ struct BatteryRegistrySnapshot {
     var rawMaxCapacity: Int?
     var amperage: Int?
     var instantAmperage: Int?
+    var voltage: Int? = nil
     var timeRemainingMinutes: Int?
     var averageTimeToFullMinutes: Int?
     var averageTimeToEmptyMinutes: Int?
@@ -503,7 +504,14 @@ private struct ResolvedBatteryEstimate {
     let source: BatteryEstimateSource
 }
 
-final class BatteryService {
+protocol BatteryStateService: AnyObject {
+    var onPowerSourceChange: (() -> Void)? { get set }
+
+    func invalidateTransientEstimateState(reason: String)
+    func fetchState() -> BatteryState
+}
+
+final class BatteryService: BatteryStateService {
     private enum PowerTransitionPolicy {
         static let dischargeWarmupWindow: TimeInterval = 2
         static let provisionalDischargeDelay: TimeInterval = 1
@@ -604,15 +612,22 @@ final class BatteryService {
             registrySnapshot: registrySnapshot,
             now: now
         )
+        let isFull = isCharged || percentage == 100
+        let chargingWatts = BatteryChargingPowerResolver.resolve(
+            registrySnapshot: registrySnapshot,
+            isCharging: isCharging,
+            isFull: isFull
+        )
         let state = BatteryState(
             hasBattery: true,
             percentage: percentage,
             isCharging: isCharging,
-            isFull: isCharged || percentage == 100,
+            isFull: isFull,
             powerSource: powerSource,
             timeRemainingMinutes: estimate.minutes,
             estimateDate: estimate.minutes == nil ? nil : now,
-            estimateSource: estimate.source
+            estimateSource: estimate.source,
+            chargingWatts: chargingWatts
         )
 
         logRefresh(
@@ -893,6 +908,7 @@ final class BatteryService {
             rawMaxCapacity: numericValue(properties["AppleRawMaxCapacity"]),
             amperage: numericValue(properties["Amperage"]),
             instantAmperage: numericValue(properties["InstantAmperage"]),
+            voltage: numericValue(properties["Voltage"]),
             timeRemainingMinutes: numericValue(properties["TimeRemaining"]),
             averageTimeToFullMinutes: numericValue(properties["AvgTimeToFull"]),
             averageTimeToEmptyMinutes: numericValue(properties["AvgTimeToEmpty"])
@@ -955,6 +971,7 @@ final class BatteryService {
             iops=\(iopsMinutes) \
             regExternal=\(stringValue(registrySnapshot?.externalConnected)) \
             regAmp=\(stringValue(registrySnapshot?.amperage)) \
+            regVolt=\(stringValue(registrySnapshot?.voltage)) \
             regTimeRemaining=\(stringValue(registrySnapshot?.timeRemainingMinutes)) \
             regAvgEmpty=\(stringValue(registrySnapshot?.averageTimeToEmptyMinutes)) \
             dischargeWarmup=\(dischargeWarmup) \
